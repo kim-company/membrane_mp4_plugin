@@ -8,6 +8,7 @@ defmodule Membrane.MP4.Muxer.CMAF.TrackSamplesQueue do
   defstruct collectable?: false,
             track_with_keyframes?: false,
             collected_samples_duration: 0,
+            accumulated_offset: 0,
             duration_range: nil,
             target_samples: [],
             excess_samples: []
@@ -16,6 +17,7 @@ defmodule Membrane.MP4.Muxer.CMAF.TrackSamplesQueue do
           collectable?: boolean(),
           track_with_keyframes?: boolean(),
           collected_samples_duration: non_neg_integer(),
+          accumulated_offset: non_neg_integer(),
           duration_range: DurationRange.t() | nil,
           target_samples: list(Membrane.Buffer.t()),
           excess_samples: list(Membrane.Buffer.t())
@@ -51,7 +53,7 @@ defmodule Membrane.MP4.Muxer.CMAF.TrackSamplesQueue do
   """
   @spec plain_push_until_target(t(), Membrane.Buffer.t(), Membrane.Time.t()) :: t()
   def plain_push_until_target(%__MODULE__{collectable?: false} = queue, sample, base_timestamp) do
-    target_duration = base_timestamp + queue.duration_range.target
+    target_duration = base_timestamp + queue.duration_range.target + queue.accumulated_offset
 
     track_duration = duration_from_sample(sample)
 
@@ -223,11 +225,14 @@ defmodule Membrane.MP4.Muxer.CMAF.TrackSamplesQueue do
 
     result = Enum.reverse(target_samples)
 
+    new_offset = queue.duration_range.target - total_duration(target_samples)
+
     queue = %__MODULE__{
       queue
       | target_samples: excess_samples,
         excess_samples: [],
-        collected_samples_duration: total_duration(excess_samples)
+        collected_samples_duration: total_duration(excess_samples),
+        accumulated_offset: max(queue.accumulated_offset + new_offset, 0)
     }
 
     {result, queue}
@@ -245,12 +250,15 @@ defmodule Membrane.MP4.Muxer.CMAF.TrackSamplesQueue do
   def collect(%__MODULE__{collectable?: true} = queue) do
     %__MODULE__{target_samples: target_samples, excess_samples: excess_samples} = queue
 
+    new_offset = queue.duration_range.target - total_duration(target_samples)
+
     queue = %__MODULE__{
       queue
       | collectable?: false,
         target_samples: excess_samples,
         excess_samples: [],
-        collected_samples_duration: total_duration(excess_samples)
+        collected_samples_duration: total_duration(excess_samples),
+        accumulated_offset: max(queue.accumulated_offset + new_offset, 0)
     }
 
     {target_samples, queue}
@@ -331,6 +339,7 @@ defmodule Membrane.MP4.Muxer.CMAF.TrackSamplesQueue do
       queue
       | collectable?: false,
         collected_samples_duration: 0,
+        accumulated_offset: 0,
         target_samples: [],
         excess_samples: []
     }
