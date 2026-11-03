@@ -455,6 +455,9 @@ defmodule Membrane.MP4.Muxer.CMAF do
       # decoding timestamp of the current segment, initialized with DTS of the first buffer
       # and then incremented by duration of every produced segment
       segment_decoding_timestamp: nil,
+      # Preserve the legacy presentation-based fragment clock for negative-start
+      # tracks. Keep actual DTS untouched for queue/segment decisions.
+      decode_time_offset: 0,
       # presentation timestamp of the current segment, initialized with PTS of the first buffer
       # and then incremented by duration of every produced segment
       segment_presentation_timestamp: nil,
@@ -604,6 +607,10 @@ defmodule Membrane.MP4.Muxer.CMAF do
           id: track_data.id,
           sequence_number: state.seq_nums[output_pad],
           timescale: timescale,
+          base_decode_timestamp:
+            (track_data.segment_decoding_timestamp + track_data.decode_time_offset)
+            |> Helper.timescalify(timescale)
+            |> Ratio.trunc(),
           base_timestamp:
             track_data.segment_presentation_timestamp
             |> Helper.timescalify(timescale)
@@ -741,6 +748,7 @@ defmodule Membrane.MP4.Muxer.CMAF do
         update_in(state, [:pad_to_track_data, pad], fn data ->
           Map.merge(data, %{
             segment_decoding_timestamp: sample.dts,
+            decode_time_offset: if(sample.dts < 0, do: sample.pts - sample.dts, else: 0),
             segment_presentation_timestamp: sample.pts
           })
         end)

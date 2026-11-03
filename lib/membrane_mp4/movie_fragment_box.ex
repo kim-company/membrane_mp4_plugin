@@ -79,7 +79,8 @@ defmodule Membrane.MP4.MovieFragmentBox do
               tfdt: %{
                 children: [],
                 fields: %{
-                  base_media_decode_time: config.base_timestamp,
+                  base_media_decode_time:
+                    Map.get(config, :base_decode_timestamp, config.base_timestamp),
                   flags: 0,
                   version: 1
                 }
