@@ -607,6 +607,8 @@ defmodule Membrane.MP4.Muxer.CMAF do
           id: track_data.id,
           sequence_number: state.seq_nums[output_pad],
           timescale: timescale,
+          pts: hd(samples).pts,
+          dts: hd(samples).dts,
           base_decode_timestamp:
             (track_data.segment_decoding_timestamp + track_data.decode_time_offset)
             |> Helper.timescalify(timescale)
@@ -660,7 +662,10 @@ defmodule Membrane.MP4.Muxer.CMAF do
       last_chunk?: segment_finished?(state)
     }
 
-    {:buffer, {output_pad, %Buffer{payload: payload, metadata: metadata}}}
+    pts = tracks_data |> Enum.map(& &1.pts) |> Enum.min()
+    dts = tracks_data |> Enum.map(& &1.dts) |> Enum.min()
+
+    {:buffer, {output_pad, %Buffer{payload: payload, pts: pts, dts: dts, metadata: metadata}}}
   end
 
   defp update_finish_current_segment_state(actions, state) do

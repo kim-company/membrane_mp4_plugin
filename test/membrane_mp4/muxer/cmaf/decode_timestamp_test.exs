@@ -9,15 +9,26 @@ defmodule Membrane.MP4.Muxer.CMAF.DecodeTimestampTest do
 
   defmodule Origin do
     use Membrane.Filter
-    def_options(owner: [spec: pid()], offset: [spec: integer()])
+
+    def_options(
+      owner: [spec: pid()],
+      offset: [spec: integer()],
+      label: [spec: atom(), default: :sample]
+    )
+
     def_input_pad(:input, flow_control: :auto, accepted_format: _any)
     def_output_pad(:output, flow_control: :auto, accepted_format: _any)
     @impl true
     def handle_init(_ctx, opts), do: {[], opts}
     @impl true
     def handle_buffer(:input, buffer, _ctx, opts) do
-      buffer = %{buffer | pts: buffer.pts + opts.offset, dts: buffer.dts + opts.offset}
-      send(opts.owner, {:sample, buffer})
+      buffer = %{
+        buffer
+        | pts: buffer.pts + opts.offset,
+          dts: if(is_nil(buffer.dts), do: nil, else: buffer.dts + opts.offset)
+      }
+
+      send(opts.owner, {opts.label, buffer})
       {[buffer: {:output, buffer}], opts}
     end
   end
@@ -47,6 +58,8 @@ defmodule Membrane.MP4.Muxer.CMAF.DecodeTimestampTest do
       assert_sink_buffer(pipeline, :sink, buffer)
       assert_receive {:sample, sample}
       refute sample.pts == sample.dts
+      assert buffer.pts == sample.pts
+      assert buffer.dts == sample.dts
 
       {boxes, <<>>} = Container.parse!(buffer.payload)
       traf = boxes[:moof].children[:traf].children
@@ -71,10 +84,62 @@ defmodule Membrane.MP4.Muxer.CMAF.DecodeTimestampTest do
       next_decode_time =
         next_boxes[:moof].children[:traf].children[:tfdt].fields.base_media_decode_time
 
+      assert_in_delta next.dts - buffer.dts, buffer.metadata.duration, 1
+      assert next.pts > buffer.pts
+
       duration = buffer.metadata.duration |> Helper.timescalify(timescale) |> Ratio.trunc()
       assert_in_delta next_decode_time - decode_time, duration, 1
       assert_end_of_stream(pipeline, :sink)
       Testing.Pipeline.terminate(pipeline)
     end
+  end
+
+  test "muxed A/V output retains distinct earliest presentation and decoding times" do
+    owner = self()
+    fixtures = Path.expand("../../../fixtures", __DIR__)
+
+    pipeline =
+      Testing.Pipeline.start_link_supervised!(
+        spec: [
+          child(:video_source, %Membrane.File.Source{
+            location: Path.join(fixtures, "in_video.h264")
+          })
+          |> child(:video_parser, %Membrane.H264.Parser{
+            generate_best_effort_timestamps: %{framerate: {30, 1}, add_dts_offset: true},
+            output_stream_structure: :avc1
+          })
+          |> child(:video_clock, %Origin{
+            owner: owner,
+            offset: Membrane.Time.seconds(3_600),
+            label: :video_sample
+          })
+          |> get_child(:muxer),
+          child(:audio_source, %Membrane.File.Source{
+            location: Path.join(fixtures, "in_audio.aac")
+          })
+          |> child(:audio_parser, %Membrane.AAC.Parser{
+            out_encapsulation: :none,
+            output_config: :esds
+          })
+          |> child(:audio_clock, %Origin{
+            owner: owner,
+            offset: Membrane.Time.milliseconds(3_599_800),
+            label: :audio_sample
+          })
+          |> get_child(:muxer),
+          child(:muxer, %Membrane.MP4.Muxer.CMAF{segment_min_duration: Membrane.Time.seconds(2)})
+          |> child(:sink, Testing.Sink)
+        ]
+      )
+
+    assert_sink_buffer(pipeline, :sink, buffer)
+    assert_receive {:video_sample, video}
+    assert_receive {:audio_sample, audio}
+    assert audio.pts < video.pts
+    assert video.dts < Membrane.Buffer.get_dts_or_pts(audio)
+    assert buffer.pts == audio.pts
+    assert buffer.dts == video.dts
+    assert_end_of_stream(pipeline, :sink)
+    Testing.Pipeline.terminate(pipeline)
   end
 end
